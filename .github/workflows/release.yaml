@@ -54,7 +54,7 @@ jobs:
       - name: Build kernel RPM (ignore missing clippy RPM)
         run: |
             cd ~/rpmbuild/SPECS
-            rpmbuild -bb --with baseonly --nodeps kernel.spec
+            rpmbuild -bb --target x86_64 --with baseonly --nodeps kernel.spec
 
       - name: Upload built RPMs as artifact
         uses: actions/upload-artifact@v4
@@ -68,4 +68,5 @@ jobs:
           files: ~/rpmbuild/RPMS/x86_64/*.rpm
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
 
