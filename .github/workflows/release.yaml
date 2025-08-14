@@ -40,6 +40,12 @@ jobs:
             rpmdev-setuptree
             rpm -ivh *.src.rpm || echo "No SRPM in current directory, ensure kernel SRPM is present"
 
+      - name: Download kernel SRPM
+        run: |
+            dnf install -y dnf-plugins-core
+            dnf download --source kernel
+            rpm -ivh *.src.rpm
+            
       - name: Apply patch
         run: |
             cp cyan_skillfish.patch ~/rpmbuild/SOURCES/
@@ -62,3 +68,4 @@ jobs:
           files: ~/rpmbuild/RPMS/x86_64/*.rpm
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
