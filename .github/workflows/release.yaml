@@ -20,14 +20,13 @@ jobs:
       - name: Install kernel build dependencies
         run: |
           dnf -y update
-          dnf -y groupinstall "Development Tools"
-          dnf -y install \
-                bc bindgen bison clang clang-tools-extra dwarves elfutils-devel \
-                flex gcc gcc-c++ git glibc-static hmaccalc hostname kernel-rpm-macros \
-                lvm2 m4 make net-tools nss-tools openssl openssl-devel perl-Carp \
-                perl-devel perl-generators perl-interpreter pesign \
-                python3-devel python3-pyyaml  rpmdevtools rpm-build dnf-plugins-core rust rust-src rustfmt \
-                systemd-boot-unsigned systemd-ukify tpm2-tools which dracut
+          dnf5 install -y \
+             bc bindgen bison clang clang-tools-extra dwarves elfutils-devel \
+             flex gcc gcc-c++ git glibc-static hmaccalc hostname kernel-rpm-macros \
+             lvm2 m4 make net-tools nss-tools openssl openssl-devel perl-Carp \
+             perl-devel perl-generators perl-interpreter pesign \
+             python3-devel python3-pyyaml rpmdevtools rpm-build dnf-plugins-core rust rust-src rustfmt \
+             systemd-boot-unsigned systemd-ukify tpm2-tools which dracut
           dnf clean all
             
       - name: Download kernel SRPM
@@ -62,5 +61,6 @@ jobs:
           files: ~/rpmbuild/RPMS/x86_64/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
 
 
