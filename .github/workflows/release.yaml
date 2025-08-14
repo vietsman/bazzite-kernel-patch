@@ -1,7 +1,9 @@
-name: Build Minimal Patched AMDGPU (Fedora 42 x86_64)
+name: Build Patched AMDGPU Minimal RPM (Fedora 42 x86_64)
 
 on:
-  workflow_dispatch: {}
+  push:
+    branches:
+      - main   # change if your default branch is different
 
 jobs:
   build-amdgpu:
@@ -16,11 +18,14 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf -y install \
-            dnf-plugins-core \
             gcc make \
             elfutils-libelf-devel \
             rpm-build rpmdevtools \
-            git tar xz
+            git tar xz \
+            kernel-devel \
+            wget \
+            rpmdevtools \
+            rpm-sign
 
       - name: Detect latest Fedora 42 kernel (x86_64)
         id: detect
@@ -31,12 +36,27 @@ jobs:
           echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
           echo "Detected kernel: ${KVER}"
 
-      - name: Copy minimal AMDGPU module + smu11 and apply patch
+      - name: Setup RPM build tree
         run: |
-          KVER="${{ steps.detect.outputs.kernel_version }}"
+          rpmdev-setuptree
+
+      - name: Download latest Fedora 42 kernel SRPM
+        run: |
+          dnf -y install dnf-plugins-core
+          SRPM=$(dnf repoquery --source --latest-limit=1 --arch=x86_64 kernel | awk '{print $1}')
+          dnf -y download --source "$SRPM"
+          rpm -ivh kernel-*.src.rpm
+
+      - name: Extract AMDGPU source only
+        run: |
+          cd ~/rpmbuild/SOURCES
+          SRC_DIR=$(ls -d linux-* | head -n1)
           mkdir -p /tmp/amdgpu-src/pm/swsmu
-          cp -r /usr/src/kernels/${KVER}/drivers/gpu/drm/amd/amdgpu /tmp/amdgpu-src/
-          cp -r /usr/src/kernels/${KVER}/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu/
+          cp -r ${SRC_DIR}/drivers/gpu/drm/amd/amdgpu /tmp/amdgpu-src/
+          cp -r ${SRC_DIR}/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu/
+
+      - name: Apply cyan_skillfish patch
+        run: |
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MIN[[:space:]]\+1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
             /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MAX[[:space:]]\+2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
@@ -81,7 +101,7 @@ jobs:
 
           %changelog
           * Thu Aug 14 2025 CI <ci@example.invalid> - 1.0-1
-          - Minimal build against kernel headers
+          - Minimal build from SRPM with cyan_skillfish patch
           EOF
 
       - name: Build RPM
@@ -96,4 +116,3 @@ jobs:
         with:
           name: amdgpu-patched-rpm
           path: /artifacts/*.rpm
-
