@@ -1,4 +1,4 @@
-name: Build Patched AMDGPU (Fedora 42 x86_64)
+name: Build Patched AMDGPU (Fedora 42 x86_64, headers only)
 
 on:
   workflow_dispatch: {}
@@ -16,59 +16,37 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf -y install \
-            dnf-plugins-core \
             gcc make \
             elfutils-libelf-devel \
             rpm-build rpmdevtools \
-            git tar xz
+            git tar xz \
+            kernel-devel kernel
 
-      - name: Detect latest Fedora 42 kernel (x86_64)
+      - name: Detect running kernel version
         id: detect
         run: |
-          set -euo pipefail
-          NEVRA=$(dnf repoquery --latest-limit=1 --arch=x86_64 --qf '%{name}-%{version}-%{release}.%{arch}' kernel-core)
-          KVER="${NEVRA#kernel-core-}"
+          KVER=$(uname -r)
           echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
           echo "Detected kernel: ${KVER}"
 
-      - name: Install matching kernel + devel
+      - name: Copy minimal AMDGPU module + smu11 and apply patch
         run: |
           KVER="${{ steps.detect.outputs.kernel_version }}"
-          dnf -y install \
-            kernel-${KVER} \
-            kernel-devel-${KVER}
-
-      - name: Setup RPM build tree
-        run: |
-          rpmdev-setuptree
-
-      - name: Download and unpack kernel source SRPM
-        run: |
-          dnf -y download --source kernel
-          rpm -ivh kernel-*.src.rpm
-          cd ~/rpmbuild/SOURCES
-          tar -xf linux-*.tar.xz
-          SRC_DIR=$(ls -d linux-* | head -n1)
-          echo "SRC_DIR=${SRC_DIR}" > /tmp/srcdir.env
-
-      - name: Copy AMDGPU smu11 folder and apply patch
-        run: |
-          . /tmp/srcdir.env
           mkdir -p /tmp/amdgpu-src/pm/swsmu
-          cp -r ~/rpmbuild/SOURCES/${SRC_DIR}/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu/
-          # Apply frequency patch
+          cp -r /usr/src/kernels/${KVER}/drivers/gpu/drm/amd/amdgpu /tmp/amdgpu-src/
+          cp -r /usr/src/kernels/${KVER}/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu/
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MIN[[:space:]]\+1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
             /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MAX[[:space:]]\+2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
             /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
 
-      - name: Build AMDGPU module against detected kernel
+      - name: Build AMDGPU module against kernel headers
         run: |
           KVER="${{ steps.detect.outputs.kernel_version }}"
           make -C /lib/modules/${KVER}/build M=/tmp/amdgpu-src modules
           test -f /tmp/amdgpu-src/amdgpu/amdgpu.ko
 
-      - name: Create RPM spec for kmod packaging
+      - name: Create minimal RPM spec
         run: |
           cat > ~/rpmbuild/SPECS/amdgpu-patched.spec <<'EOF'
           Name:           amdgpu-patched
@@ -80,8 +58,7 @@ jobs:
           Requires:       kernel-modules >= 0
 
           %description
-          AMDGPU module built against a specific Fedora kernel with modified cyan_skillfish
-          SCLK min/max limits.
+          Minimal AMDGPU module built against Fedora kernel headers with patched cyan_skillfish SCLK limits.
 
           %global kver %{?kernel_version}
 
@@ -102,7 +79,7 @@ jobs:
 
           %changelog
           * Thu Aug 14 2025 CI <ci@example.invalid> - 1.0-1
-          - Initial build
+          - Minimal build against kernel headers
           EOF
 
       - name: Build RPM
