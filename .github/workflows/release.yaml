@@ -22,8 +22,7 @@ jobs:
 
       - name: Install kernel headers for detected version
         run: |
-          dnf install -y kernel-devel-${{ steps.detect-kernel.outputs.kernel_version }} \
-                         kernel-headers-${{ steps.detect-kernel.outputs.kernel_version }}
+          dnf install -y kernel-devel-${{ steps.detect-kernel.outputs.kernel_version }}
 
       - name: Prepare akmod source dir
         run: |
@@ -81,3 +80,4 @@ jobs:
         with:
           name: amdgpu-patched-rpm
           path: /artifacts/*.rpm
+
