@@ -1,0 +1,57 @@
+name: Build Patched Kernel
+
+on:
+  push:
+    branches:
+      - main
+  release:
+    types: [created]
+
+jobs:
+  build_kernel:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:42
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          dnf -y update
+          dnf -y install rpmdevtools rpm-build dnf-plugins-core
+          dnf clean all
+
+      - name: Download kernel SRPM
+        run: |
+          dnf download --source kernel
+          ls -lah *.src.rpm
+
+      - name: Set up RPM build tree
+        run: |
+          rpmdev-setuptree
+          rpm -ivh *.src.rpm
+
+      - name: Apply patch
+        run: |
+          cp cyan_skillfish.patch ~/rpmbuild/SOURCES/
+          cd ~/rpmbuild/SPECS
+
+      - name: Build kernel RPM
+        run: |
+          cd ~/rpmbuild/SPECS
+          rpmbuild -bb --with baseonly kernel.spec
+
+      - name: Upload built RPMs as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: patched-kernel-rpm
+          path: ~/rpmbuild/RPMS/x86_64/*.rpm
+
+      - name: Publish RPMs to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ~/rpmbuild/RPMS/x86_64/*.rpm
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
