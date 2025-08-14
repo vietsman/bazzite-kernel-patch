@@ -1,4 +1,4 @@
-name: Build Patched AMDGPU (Fedora 42 x86_64, headers only)
+name: Build Minimal Patched AMDGPU (Fedora 42 x86_64)
 
 on:
   workflow_dispatch: {}
@@ -16,16 +16,18 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf -y install \
+            dnf-plugins-core \
             gcc make \
             elfutils-libelf-devel \
             rpm-build rpmdevtools \
-            git tar xz \
-            kernel-devel kernel
+            git tar xz
 
-      - name: Detect running kernel version
+      - name: Detect latest Fedora 42 kernel (x86_64)
         id: detect
         run: |
-          KVER=$(uname -r)
+          set -euo pipefail
+          NEVRA=$(dnf repoquery --latest-limit=1 --arch=x86_64 --qf '%{name}-%{version}-%{release}.%{arch}' kernel-core)
+          KVER="${NEVRA#kernel-core-}"
           echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
           echo "Detected kernel: ${KVER}"
 
@@ -94,3 +96,4 @@ jobs:
         with:
           name: amdgpu-patched-rpm
           path: /artifacts/*.rpm
+
