@@ -25,7 +25,7 @@ jobs:
              flex gcc gcc-c++ git glibc-static hmaccalc hostname kernel-rpm-macros \
              lvm2 m4 make net-tools nss-tools openssl openssl-devel perl-Carp \
              perl-devel perl-generators perl-interpreter pesign \
-             python3-devel python3-pyyaml rpmdevtools rpm-build dnf-plugins-core rust rust-src rustfmt \
+             python3-devel python3-pyyaml rpmdevtools rpm-build dnf-plugins-core rust rust-clippy rust-src rustfmt \
              systemd-boot-unsigned systemd-ukify tpm2-tools which dracut
           dnf clean all
             
@@ -61,6 +61,7 @@ jobs:
           files: ~/rpmbuild/RPMS/x86_64/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
 
 
 
