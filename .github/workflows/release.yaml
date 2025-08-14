@@ -26,17 +26,17 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
-          # Get the newest kernel-core NEVRA for x86_64
           NEVRA=$(dnf repoquery --latest-limit=1 --arch=x86_64 --qf '%{name}-%{version}-%{release}.%{arch}' kernel-core)
-          # Extract version-release.arch portion for kernel-devel install
           KVER="${NEVRA#kernel-core-}"
           echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
           echo "Detected kernel: ${KVER}"
 
-      - name: Install matching kernel-devel
+      - name: Install matching kernel + devel
         run: |
-          dnf -y install kernel-devel-${{ steps.detect.outputs.kernel_version }} \
-                          kernel-${{ steps.detect.outputs.kernel_version }}
+          KVER="${{ steps.detect.outputs.kernel_version }}"
+          dnf -y install \
+            kernel-${KVER} \
+            kernel-devel-${KVER}
 
       - name: Setup RPM build tree
         run: |
@@ -44,24 +44,19 @@ jobs:
 
       - name: Download and unpack kernel source SRPM
         run: |
-          set -euo pipefail
           dnf -y download --source kernel
           rpm -ivh kernel-*.src.rpm
           cd ~/rpmbuild/SOURCES
-          # Extract the main Linux source tarball (name can vary slightly)
           tar -xf linux-*.tar.xz
-          # Resolve the extracted directory name deterministically
           SRC_DIR=$(ls -d linux-* | head -n1)
           echo "SRC_DIR=${SRC_DIR}" > /tmp/srcdir.env
 
-      - name: Copy AMDGPU tree and apply patch
+      - name: Copy AMDGPU smu11 folder and apply patch
         run: |
-          set -euo pipefail
           . /tmp/srcdir.env
-          mkdir -p /tmp/amdgpu-src
-          # Copy full AMD DRM subtree (needed for deps)
-          cp -r ~/rpmbuild/SOURCES/${SRC_DIR}/drivers/gpu/drm/amd /tmp/amdgpu-src/
-          # Apply the frequency limit changes
+          mkdir -p /tmp/amdgpu-src/pm/swsmu
+          cp -r ~/rpmbuild/SOURCES/${SRC_DIR}/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu/
+          # Apply frequency patch
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MIN[[:space:]]\+1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
             /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MAX[[:space:]]\+2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
@@ -69,9 +64,7 @@ jobs:
 
       - name: Build AMDGPU module against detected kernel
         run: |
-          set -euo pipefail
           KVER="${{ steps.detect.outputs.kernel_version }}"
-          # Build all AMD DRM modules so symbols resolve; output lands in the same tree
           make -C /lib/modules/${KVER}/build M=/tmp/amdgpu-src modules
           test -f /tmp/amdgpu-src/amdgpu/amdgpu.ko
 
@@ -84,7 +77,6 @@ jobs:
           Summary:        Patched AMDGPU kernel module (cyan_skillfish clocks)
           License:        GPLv2
           BuildArch:      x86_64
-          # We pass kernel_version at build time
           Requires:       kernel-modules >= 0
 
           %description
@@ -94,10 +86,8 @@ jobs:
           %global kver %{?kernel_version}
 
           %prep
-          # nothing
 
           %build
-          # nothing - module was built earlier with the kernel toolchain
 
           %install
           mkdir -p %{buildroot}/lib/modules/%{kver}/extra/amdgpu
@@ -117,10 +107,13 @@ jobs:
 
       - name: Build RPM
         run: |
-          set -euo pipefail
           KVER="${{ steps.detect.outputs.kernel_version }}"
-          rpmbuild -bb \
-            --define "kernel_version ${KVER}" \
-            ~/rpmbuild/SPECS/amdgpu-patched.spec
+          rpmbuild -bb --define "kernel_version ${KVER}" ~/rpmbuild/SPECS/amdgpu-patched.spec
           mkdir -p /artifacts
-          cp ~/rpmbuild/RPMS/x86_64/amdgpu-p
+          cp ~/rpmbuild/RPMS/x86_64/amdgpu-patched-*.rpm /artifacts/
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: amdgpu-patched-rpm
+          path: /artifacts/*.rpm
