@@ -1,7 +1,7 @@
-name: Build Patched AMDGPU (Fedora 42, x86_64)
+name: Build Patched AMDGPU (Fedora 42 x86_64)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   build-amdgpu:
@@ -9,79 +9,118 @@ jobs:
     container:
       image: fedora:42
     steps:
+      - name: Prep shell
+        run: |
+          set -euo pipefail
+
       - name: Install build dependencies
         run: |
-          dnf install -y akmods kernel-devel gcc make elfutils-libelf-devel rpm-build dnf-plugins-core
+          dnf -y install \
+            dnf-plugins-core \
+            gcc make \
+            elfutils-libelf-devel \
+            rpm-build rpmdevtools \
+            git tar xz
 
-      - name: Detect latest Fedora 42 x86_64 kernel
-        id: detect-kernel
+      - name: Detect latest Fedora 42 kernel (x86_64)
+        id: detect
         run: |
-          KERNEL_PKG=$(dnf repoquery --arch=x86_64 --latest-limit=1 kernel-core)
-          KERNEL_VER=$(echo $KERNEL_PKG | sed 's/kernel-core-//')
-          echo "kernel_version=$KERNEL_VER" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          # Get the newest kernel-core NEVRA for x86_64
+          NEVRA=$(dnf repoquery --latest-limit=1 --arch=x86_64 --qf '%{name}-%{version}-%{release}.%{arch}' kernel-core)
+          # Extract version-release.arch portion for kernel-devel install
+          KVER="${NEVRA#kernel-core-}"
+          echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
+          echo "Detected kernel: ${KVER}"
 
-      - name: Install kernel headers for detected version
+      - name: Install matching kernel-devel
         run: |
-          dnf install -y kernel-devel-${{ steps.detect-kernel.outputs.kernel_version }}
-      
-      - name: Prepare akmod source dir
+          dnf -y install kernel-devel-${{ steps.detect.outputs.kernel_version }} \
+                          kernel-${{ steps.detect.outputs.kernel_version }}
+
+      - name: Setup RPM build tree
         run: |
-          dnf install -y rpmdevtools
           rpmdev-setuptree
-          mkdir -p /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/amd/pm/swsmu/smu11
-          # Download Fedora kernel source matching detected version
-          dnf download --source kernel
+
+      - name: Download and unpack kernel source SRPM
+        run: |
+          set -euo pipefail
+          dnf -y download --source kernel
           rpm -ivh kernel-*.src.rpm
           cd ~/rpmbuild/SOURCES
+          # Extract the main Linux source tarball (name can vary slightly)
           tar -xf linux-*.tar.xz
-          # Copy AMDGPU driver
-          cp -r linux-*/drivers/gpu/drm/amd /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/
-          # Apply patch
-          sed -i 's/#define CYAN_SKILLFISH_SCLK_MIN *1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
-              /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/amd/pm/swsmu/smu11/cyan_skillfish_ppt.c
-          sed -i 's/#define CYAN_SKILLFISH_SCLK_MAX *2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
-              /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/amd/pm/swsmu/smu11/cyan_skillfish_ppt.c
+          # Resolve the extracted directory name deterministically
+          SRC_DIR=$(ls -d linux-* | head -n1)
+          echo "SRC_DIR=${SRC_DIR}" > /tmp/srcdir.env
 
-
-      - name: Create akmod spec
+      - name: Copy AMDGPU tree and apply patch
         run: |
-          cat > /usr/src/amdgpu-patched-1.0/amdgpu-patched.spec <<'EOF'
-          Name: amdgpu-patched
-          Version: 1.0
-          Release: 1
-          Summary: Patched AMDGPU kernel module
-          License: GPL
-          BuildRequires: kernel-devel
+          set -euo pipefail
+          . /tmp/srcdir.env
+          mkdir -p /tmp/amdgpu-src
+          # Copy full AMD DRM subtree (needed for deps)
+          cp -r ~/rpmbuild/SOURCES/${SRC_DIR}/drivers/gpu/drm/amd /tmp/amdgpu-src/
+          # Apply the frequency limit changes
+          sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MIN[[:space:]]\+1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
+            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
+          sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MAX[[:space:]]\+2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
+            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
+
+      - name: Build AMDGPU module against detected kernel
+        run: |
+          set -euo pipefail
+          KVER="${{ steps.detect.outputs.kernel_version }}"
+          # Build all AMD DRM modules so symbols resolve; output lands in the same tree
+          make -C /lib/modules/${KVER}/build M=/tmp/amdgpu-src modules
+          test -f /tmp/amdgpu-src/amdgpu/amdgpu.ko
+
+      - name: Create RPM spec for kmod packaging
+        run: |
+          cat > ~/rpmbuild/SPECS/amdgpu-patched.spec <<'EOF'
+          Name:           amdgpu-patched
+          Version:        1.0
+          Release:        1%{?dist}
+          Summary:        Patched AMDGPU kernel module (cyan_skillfish clocks)
+          License:        GPLv2
+          BuildArch:      x86_64
+          # We pass kernel_version at build time
+          Requires:       kernel-modules >= 0
+
           %description
-          Patched AMDGPU driver with modified clock limits.
-          
+          AMDGPU module built against a specific Fedora kernel with modified cyan_skillfish
+          SCLK min/max limits.
+
+          %global kver %{?kernel_version}
+
           %prep
+          # nothing
 
           %build
-          make -C /lib/modules/%{kernel_version}/build M=$PWD/drivers/gpu/drm/amd modules
+          # nothing - module was built earlier with the kernel toolchain
 
           %install
-          mkdir -p %{buildroot}/lib/modules/%{kernel_version}/extra
-          cp drivers/gpu/drm/amd/amdgpu/amdgpu.ko %{buildroot}/lib/modules/%{kernel_version}/extra/
+          mkdir -p %{buildroot}/lib/modules/%{kver}/extra/amdgpu
+          install -m 0644 /tmp/amdgpu-src/amdgpu/amdgpu.ko %{buildroot}/lib/modules/%{kver}/extra/amdgpu/
+          /usr/sbin/strip --strip-debug %{buildroot}/lib/modules/%{kver}/extra/amdgpu/amdgpu.ko || :
 
           %post
-          /sbin/depmod -a %{kernel_version}
+          /sbin/depmod -a %{kver} || :
 
-          %clean
-          rm -rf %{buildroot}
+          %files
+          /lib/modules/%{kver}/extra/amdgpu/amdgpu.ko
+
+          %changelog
+          * Thu Aug 14 2025 CI <ci@example.invalid> - 1.0-1
+          - Initial build
           EOF
 
       - name: Build RPM
         run: |
-          cd /usr/src/amdgpu-patched-1.0
-          akmods --force --kernel ${{ steps.detect-kernel.outputs.kernel_version }} --akmod amdgpu-patched
+          set -euo pipefail
+          KVER="${{ steps.detect.outputs.kernel_version }}"
+          rpmbuild -bb \
+            --define "kernel_version ${KVER}" \
+            ~/rpmbuild/SPECS/amdgpu-patched.spec
           mkdir -p /artifacts
-          cp /var/cache/akmods/amdgpu-patched/*.rpm /artifacts/
-
-      - name: Upload RPM
-        uses: actions/upload-artifact@v4
-        with:
-          name: amdgpu-patched-rpm
-          path: /artifacts/*.rpm
-
-
+          cp ~/rpmbuild/RPMS/x86_64/amdgpu-p
