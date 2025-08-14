@@ -1,72 +1,83 @@
-name: Build Patched Kernel
+name: Build Patched AMDGPU (Fedora 42, x86_64)
 
 on:
-  push:
-    branches:
-      - main
-  release:
-    types: [created]
+  workflow_dispatch:
 
 jobs:
-  build_kernel:
+  build-amdgpu:
     runs-on: ubuntu-latest
     container:
       image: fedora:42
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install kernel build dependencies
+      - name: Install build dependencies
         run: |
-            dnf -y update
-            dnf install -y rpmdevtools rpm-build dnf-plugins-core \
-                  bc bindgen bison clang clang-tools-extra dwarves elfutils-devel \
-                  flex gcc gcc-c++ git glibc-static hmaccalc hostname kernel-rpm-macros \
-                  lvm2 m4 make net-tools nss-tools openssl openssl-devel perl-Carp \
-                  perl-devel perl-generators perl-interpreter pesign \
-                  python3-devel python3-pyyaml rust rust-src rustfmt \
-                  systemd-boot-unsigned systemd-ukify tpm2-tools which dracut
-            dnf clean all
+          dnf install -y akmods kernel-devel gcc make elfutils-libelf-devel rpm-build dnf-plugins-core
 
-      - name: Install clippy via rustup
+      - name: Detect latest Fedora 42 x86_64 kernel
+        id: detect-kernel
         run: |
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            source $HOME/.cargo/env
-            rustup component add clippy
+          KERNEL_PKG=$(dnf repoquery --arch=x86_64 --latest-limit=1 kernel-core)
+          KERNEL_VER=$(echo $KERNEL_PKG | sed 's/kernel-core-//')
+          echo "kernel_version=$KERNEL_VER" >> $GITHUB_OUTPUT
 
-      - name: Set up RPM build tree
+      - name: Install kernel headers for detected version
         run: |
-            rpmdev-setuptree
-            rpm -ivh *.src.rpm || echo "No SRPM in current directory, ensure kernel SRPM is present"
+          dnf install -y kernel-devel-${{ steps.detect-kernel.outputs.kernel_version }} \
+                         kernel-headers-${{ steps.detect-kernel.outputs.kernel_version }}
 
-      - name: Download kernel SRPM
+      - name: Prepare akmod source dir
         run: |
-            dnf install -y dnf-plugins-core
-            dnf download --source kernel
-            rpm -ivh *.src.rpm
-            
-      - name: Apply patch
-        run: |
-            cp cyan_skillfish.patch ~/rpmbuild/SOURCES/
-            cd ~/rpmbuild/SPECS
+          mkdir -p /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/amd/pm/swsmu/smu11
+          # Download Fedora kernel source matching detected version
+          dnf download --source kernel
+          rpm -ivh kernel-*.src.rpm
+          cd /root/rpmbuild/SOURCES
+          tar -xf linux-*.tar.xz
+          # Copy AMDGPU driver
+          cp -r linux-*/drivers/gpu/drm/amd /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/
+          # Apply patch to cyan_skillfish_ppt.c
+          sed -i 's/#define CYAN_SKILLFISH_SCLK_MIN *1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
+              /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/amd/pm/swsmu/smu11/cyan_skillfish_ppt.c
+          sed -i 's/#define CYAN_SKILLFISH_SCLK_MAX *2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
+              /usr/src/amdgpu-patched-1.0/drivers/gpu/drm/amd/pm/swsmu/smu11/cyan_skillfish_ppt.c
 
-      - name: Build kernel RPM (ignore missing clippy RPM)
+      - name: Create akmod spec
         run: |
-            cd ~/rpmbuild/SPECS
-            rpmbuild -bb --target x86_64 --with baseonly --nodeps kernel.spec
+          cat > /usr/src/amdgpu-patched-1.0/amdgpu-patched.spec <<'EOF'
+          Name: amdgpu-patched
+          Version: 1.0
+          Release: 1
+          Summary: Patched AMDGPU kernel module
+          License: GPL
+          BuildRequires: kernel-devel
+          %description
+          Patched AMDGPU driver with modified clock limits.
+          
+          %prep
 
-      - name: Upload built RPMs as artifact
+          %build
+          make -C /lib/modules/%{kernel_version}/build M=$PWD/drivers/gpu/drm/amd modules
+
+          %install
+          mkdir -p %{buildroot}/lib/modules/%{kernel_version}/extra
+          cp drivers/gpu/drm/amd/amdgpu/amdgpu.ko %{buildroot}/lib/modules/%{kernel_version}/extra/
+
+          %post
+          /sbin/depmod -a %{kernel_version}
+
+          %clean
+          rm -rf %{buildroot}
+          EOF
+
+      - name: Build RPM
+        run: |
+          cd /usr/src/amdgpu-patched-1.0
+          akmods --force --kernel ${{ steps.detect-kernel.outputs.kernel_version }} --akmod amdgpu-patched
+          mkdir -p /artifacts
+          cp /var/cache/akmods/amdgpu-patched/*.rpm /artifacts/
+
+      - name: Upload RPM
         uses: actions/upload-artifact@v4
         with:
-          name: patched-kernel-rpm
-          path: ~/rpmbuild/RPMS/x86_64/*.rpm
-
-      - name: Publish RPMs to GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: ~/rpmbuild/RPMS/x86_64/*.rpm
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-
-
+          name: amdgpu-patched-rpm
+          path: /artifacts/*.rpm
