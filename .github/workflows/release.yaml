@@ -1,4 +1,4 @@
-name: Build Patched AMDGPU
+name: Build AMDGPU for Fedora 42
 
 on:
   push:
@@ -8,41 +8,53 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: fedora:42
-
+    container:
+      image: fedora:42
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Install build dependencies
         run: |
-          dnf install -y dnf-plugins-core git make gcc clang elfutils-libelf-devel bc flex bison \
-            rpmdevtools cpio patch kernel-devel kernel-headers
+          dnf install -y dnf-plugins-core git fedpkg rpmdevtools ncurses-devel pesign \
+                         gcc bc bison flex elfutils-libelf-devel openssl-devel \
+                         grubby dwarves cpio xz make
 
-      - name: Get kernel version
+      - name: Detect latest Fedora 42 kernel (x86_64)
+        id: detect
         run: |
-          KVER=$(rpm -q --qf "%{VERSION}-%{RELEASE}.%{ARCH}\n" kernel-devel)
-          echo "KVER=$KVER" >> $GITHUB_ENV
+          set -euo pipefail
+          NEVRA=$(dnf repoquery --latest-limit=1 --arch=x86_64 --qf '%{name}-%{version}-%{release}.%{arch}' kernel-core)
+          KVER="${NEVRA#kernel-core-}"
+          echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
+          echo "Detected kernel: ${KVER}"
 
       - name: Download kernel source
         run: |
-          dnf install -y --skip-broken fedpkg
-          fedpkg clone -a kernel
+          fedpkg clone --anonymous kernel
           cd kernel
           fedpkg sources
           tar -xf linux-*.tar.xz
-          mv linux-* /usr/src/kernel-src
+          tar -xf kernel-abi-stablelists-*.tar.xz || true
+          tar -xf kernel-kabi-dw-*.tar.xz || true
+          mkdir -p /usr/src/kernel-src
+          shopt -s dotglob
+          mv linux-*/* /usr/src/kernel-src/
 
-      - name: Download and prepare amdgpu
+      - name: Apply AMDGPU patch
         run: |
-          git clone --depth=1 https://github.com/RadeonOpenCompute/amdgpu-pro.git amdgpu-src
-          # Remove NVIDIA firmware references to reduce size
-          find amdgpu-src -type f -name '*nvidia*' -delete
+          cd /usr/src/kernel-src/drivers/gpu/drm/amd/amdgpu
+          # Example: patch -p1 < /path/to/your.patch
+          echo "Patching AMDGPU..."
+          # Place your actual patch command here
 
-      - name: Build module
+      - name: Build AMDGPU module
         run: |
-          cd amdgpu-src
-          make -C /usr/src/kernels/${KVER} M=$PWD modules
+          cd /usr/src/kernel-src
+          make -C /lib/modules/${{ steps.detect.outputs.kernel_version }}/build M=$(pwd)/drivers/gpu/drm/amd/amdgpu modules
 
-      - name: Upload module
+      - name: Upload built module
         uses: actions/upload-artifact@v4
         with:
-          name: amdgpu-patched-${{ env.KVER }}
-          path: amdgpu-src/*.ko
+          name: amdgpu-${{ steps.detect.outputs.kernel_version }}
+          path: /usr/src/kernel-src/drivers/gpu/drm/amd/amdgpu/*.ko
