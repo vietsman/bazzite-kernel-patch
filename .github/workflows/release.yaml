@@ -15,6 +15,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install initial dependencies
+        run: |
+          dnf install -y dnf-plugins-core rpm-build rpmdevtools wget cpio xz \
+                         make gcc elfutils-libelf-devel patch git
+
+      - name: Setup RPM build tree
+        run: rpmdev-setuptree
+
       - name: Detect latest Fedora 42 kernel (x86_64)
         id: detect
         run: |
@@ -25,21 +33,19 @@ jobs:
           echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
           echo "Detected kernel: ${KVER}"
 
-      - name: Install build dependencies
+      - name: Install kernel headers
         run: |
-          dnf install -y dnf-plugins-core rpm-build rpmdevtools \
-            make gcc elfutils-libelf-devel kernel-devel-${{ steps.detect.outputs.kernel_version }} \
-            wget cpio xz
+          dnf install -y "kernel-devel-${{ steps.detect.outputs.kernel_version }}" || dnf install -y kernel-devel
 
       - name: Download Fedora kernel SRPM
         run: |
-          dnf download --source kernel-core-${{ steps.detect.outputs.kernel_version }}
+          dnf download --source "kernel-core-${{ steps.detect.outputs.kernel_version }}"
           rpm -ivh kernel-core-*.src.rpm
 
       - name: Extract AMDGPU driver only
         run: |
-          mkdir -p /tmp/amdgpu-src
           SRC_DIR=$(ls -d ~/rpmbuild/SOURCES/linux-*/ | head -n1)
+          mkdir -p /tmp/amdgpu-src/pm/swsmu
           cp -r $SRC_DIR/drivers/gpu/drm/amd/amdgpu /tmp/amdgpu-src/
           cp -r $SRC_DIR/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu
 
@@ -53,10 +59,15 @@ jobs:
       - name: Build AMDGPU module
         run: |
           KVER="${{ steps.detect.outputs.kernel_version }}"
-          make -C /lib/modules/$KVER/build M=/tmp/amdgpu-src modules
+          BUILD_DIR="/lib/modules/$KVER/build"
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "Kernel build directory not found. Using default kernel headers."
+            BUILD_DIR=$(rpm -ql kernel-devel | grep "/build$" | head -n1)
+          fi
+          make -C "$BUILD_DIR" M=/tmp/amdgpu-src modules
 
       - name: Upload module artifact
         uses: actions/upload-artifact@v4
         with:
           name: amdgpu-patched-${{ steps.detect.outputs.kernel_version }}
-          path: /tmp/amdgpu-src/amdgpu/*.ko
+          path: /tmp/amdgpu-src/**/*.ko
