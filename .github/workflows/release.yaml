@@ -1,118 +1,48 @@
-name: Build Patched AMDGPU Minimal RPM (Fedora 42 x86_64)
+name: Build Patched AMDGPU
 
 on:
   push:
     branches:
-      - main   # change if your default branch is different
+      - main
 
 jobs:
-  build-amdgpu:
+  build:
     runs-on: ubuntu-latest
-    container:
-      image: fedora:42
-    steps:
-      - name: Prep shell
-        run: |
-          set -euo pipefail
+    container: fedora:42
 
+    steps:
       - name: Install build dependencies
         run: |
-          dnf -y install \
-            gcc make \
-            elfutils-libelf-devel \
-            rpm-build rpmdevtools \
-            git tar xz \
-            kernel-devel \
-            wget \
-            rpmdevtools \
-            rpm-sign
+          dnf install -y dnf-plugins-core git make gcc clang elfutils-libelf-devel bc flex bison \
+            rpmdevtools cpio patch kernel-devel kernel-headers
 
-      - name: Detect latest Fedora 42 kernel (x86_64)
-        id: detect
+      - name: Get kernel version
         run: |
-          set -euo pipefail
-          NEVRA=$(dnf repoquery --latest-limit=1 --arch=x86_64 --qf '%{name}-%{version}-%{release}.%{arch}' kernel-core)
-          KVER="${NEVRA#kernel-core-}"
-          echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
-          echo "Detected kernel: ${KVER}"
+          KVER=$(rpm -q --qf "%{VERSION}-%{RELEASE}.%{ARCH}\n" kernel-devel)
+          echo "KVER=$KVER" >> $GITHUB_ENV
 
-      - name: Setup RPM build tree
+      - name: Download kernel source
         run: |
-          rpmdev-setuptree
+          dnf install -y --skip-broken fedpkg
+          fedpkg clone -a kernel
+          cd kernel
+          fedpkg sources
+          tar -xf linux-*.tar.xz
+          mv linux-* /usr/src/kernel-src
 
-      - name: Download latest Fedora 42 kernel SRPM
+      - name: Download and prepare amdgpu
         run: |
-          dnf -y install dnf-plugins-core
-          SRPM=$(dnf repoquery --source --latest-limit=1 --arch=x86_64 kernel | awk '{print $1}')
-          dnf -y download --source "$SRPM"
-          rpm -ivh kernel-*.src.rpm
+          git clone --depth=1 https://github.com/RadeonOpenCompute/amdgpu-pro.git amdgpu-src
+          # Remove NVIDIA firmware references to reduce size
+          find amdgpu-src -type f -name '*nvidia*' -delete
 
-      - name: Extract AMDGPU source only
+      - name: Build module
         run: |
-          cd ~/rpmbuild/SOURCES
-          SRC_DIR=$(ls -d linux-* | head -n1)
-          mkdir -p /tmp/amdgpu-src/pm/swsmu
-          cp -r ${SRC_DIR}/drivers/gpu/drm/amd/amdgpu /tmp/amdgpu-src/
-          cp -r ${SRC_DIR}/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu/
+          cd amdgpu-src
+          make -C /usr/src/kernels/${KVER} M=$PWD modules
 
-      - name: Apply cyan_skillfish patch
-        run: |
-          sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MIN[[:space:]]\+1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
-            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
-          sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MAX[[:space:]]\+2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
-            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
-
-      - name: Build AMDGPU module against kernel headers
-        run: |
-          KVER="${{ steps.detect.outputs.kernel_version }}"
-          make -C /lib/modules/${KVER}/build M=/tmp/amdgpu-src modules
-          test -f /tmp/amdgpu-src/amdgpu/amdgpu.ko
-
-      - name: Create minimal RPM spec
-        run: |
-          cat > ~/rpmbuild/SPECS/amdgpu-patched.spec <<'EOF'
-          Name:           amdgpu-patched
-          Version:        1.0
-          Release:        1%{?dist}
-          Summary:        Patched AMDGPU kernel module (cyan_skillfish clocks)
-          License:        GPLv2
-          BuildArch:      x86_64
-          Requires:       kernel-modules >= 0
-
-          %description
-          Minimal AMDGPU module built against Fedora kernel headers with patched cyan_skillfish SCLK limits.
-
-          %global kver %{?kernel_version}
-
-          %prep
-
-          %build
-
-          %install
-          mkdir -p %{buildroot}/lib/modules/%{kver}/extra/amdgpu
-          install -m 0644 /tmp/amdgpu-src/amdgpu/amdgpu.ko %{buildroot}/lib/modules/%{kver}/extra/amdgpu/
-          /usr/sbin/strip --strip-debug %{buildroot}/lib/modules/%{kver}/extra/amdgpu/amdgpu.ko || :
-
-          %post
-          /sbin/depmod -a %{kver} || :
-
-          %files
-          /lib/modules/%{kver}/extra/amdgpu/amdgpu.ko
-
-          %changelog
-          * Thu Aug 14 2025 CI <ci@example.invalid> - 1.0-1
-          - Minimal build from SRPM with cyan_skillfish patch
-          EOF
-
-      - name: Build RPM
-        run: |
-          KVER="${{ steps.detect.outputs.kernel_version }}"
-          rpmbuild -bb --define "kernel_version ${KVER}" ~/rpmbuild/SPECS/amdgpu-patched.spec
-          mkdir -p /artifacts
-          cp ~/rpmbuild/RPMS/x86_64/amdgpu-patched-*.rpm /artifacts/
-
-      - name: Upload RPM artifact
+      - name: Upload module
         uses: actions/upload-artifact@v4
         with:
-          name: amdgpu-patched-rpm
-          path: /artifacts/*.rpm
+          name: amdgpu-patched-${{ env.KVER }}
+          path: amdgpu-src/*.ko
