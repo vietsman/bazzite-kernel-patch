@@ -1,15 +1,16 @@
-name: Build & Publish AMDGPU Module
+name: Build Patched AMDGPU
 
 on:
   push:
     branches:
-      - main  # Change to your default branch if needed
+      - main
 
 jobs:
-  build:
+  build-amdgpu:
     runs-on: ubuntu-latest
     container:
       image: fedora:42
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,40 +27,36 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          dnf install -y dnf-plugins-core
-          dnf install -y make gcc elfutils-libelf-devel \
-            kernel-devel-${{ steps.detect.outputs.kernel_version }}
+          dnf install -y dnf-plugins-core rpm-build rpmdevtools \
+            make gcc elfutils-libelf-devel kernel-devel-${{ steps.detect.outputs.kernel_version }} \
+            wget cpio xz
 
-      - name: Patch AMDGPU driver
+      - name: Download Fedora kernel SRPM
         run: |
-          # Example patch commands
+          dnf download --source kernel-core-${{ steps.detect.outputs.kernel_version }}
+          rpm -ivh kernel-core-*.src.rpm
+
+      - name: Extract AMDGPU driver only
+        run: |
+          mkdir -p /tmp/amdgpu-src
+          SRC_DIR=$(ls -d ~/rpmbuild/SOURCES/linux-*/ | head -n1)
+          cp -r $SRC_DIR/drivers/gpu/drm/amd/amdgpu /tmp/amdgpu-src/
+          cp -r $SRC_DIR/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu
+
+      - name: Apply cyan_skillfish patch
+        run: |
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MIN[[:space:]]\+1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
-              drivers/gpu/drm/amd/pm/swsmu/smu11/cyan_skillfish_ppt.c
+            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
           sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MAX[[:space:]]\+2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
-              drivers/gpu/drm/amd/pm/swsmu/smu11/cyan_skillfish_ppt.c
+            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
 
       - name: Build AMDGPU module
         run: |
           KVER="${{ steps.detect.outputs.kernel_version }}"
-          make -C /lib/modules/$KVER/build \
-            M=$(pwd)/drivers/gpu/drm/amd/amdgpu modules
+          make -C /lib/modules/$KVER/build M=/tmp/amdgpu-src modules
 
-      - name: Prepare artifact directory
-        run: |
-          mkdir -p /tmp/artifacts
-          cp drivers/gpu/drm/amd/amdgpu/*.ko /tmp/artifacts/
-
-      - name: Upload artifact (optional, for debugging)
+      - name: Upload module artifact
         uses: actions/upload-artifact@v4
         with:
           name: amdgpu-patched-${{ steps.detect.outputs.kernel_version }}
-          path: /tmp/artifacts/*.ko
-
-      - name: Create or update GitHub Release
-        uses: ncipollo/release-action@v1
-        with:
-          tag: "amdgpu-${{ steps.detect.outputs.kernel_version }}"
-          name: "Patched AMDGPU for kernel ${{ steps.detect.outputs.kernel_version }}"
-          artifacts: /tmp/artifacts/*.ko
-          draft: false
-          prerelease: false
+          path: /tmp/amdgpu-src/amdgpu/*.ko
