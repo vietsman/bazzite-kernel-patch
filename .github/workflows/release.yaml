@@ -1,12 +1,10 @@
-name: Build Patched AMDGPU
+name: Patch Fedora Kernel Source
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
-  build-amdgpu:
+  patch-kernel:
     runs-on: ubuntu-latest
     container:
       image: fedora:42
@@ -39,8 +37,17 @@ jobs:
         run: |
           rpmbuild -bs ~/rpmbuild/SPECS/kernel.spec
 
-      - name: Upload patched rpm
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-patch.src.rpm
-          path: ~/rpmbuild/SRPMS/kernel-*.src.rpm
+      - name: Authenticate with COPR
+        run: |
+          mkdir -p ~/.config
+          cat > ~/.config/copr <<EOF
+          [copr-cli]
+          login = ${{ secrets.COPR_LOGIN }}
+          username = vietsman
+          token = ${{ secrets.COPR_TOKEN }}
+          copr_url = https://copr.fedorainfracloud.org
+          EOF
+
+      - name: Upload to COPR
+        run: |
+          copr-cli build vietsman/patched-kernel-bc250 ~/rpmbuild/SRPMS/kernel-*.src.rpm
