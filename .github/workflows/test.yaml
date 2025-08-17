@@ -1,0 +1,33 @@
+name: Build Patched AMDGPU
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-amdgpu:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:42
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Apply Patch
+        run: |
+          ls -la
+          cp ./linux-kernel-bc250.patch rpmbuild/SOURCES
+          sed -i '/^Patch999999: linux-kernel-test.patch$/a Patch100: linux-kernel-bc250.patch' rpmbuild/SPECS/kernel.spec
+          sed -i '/^ApplyOptionalPatch linux-kernel-test.patch$/a ApplyOptionalPatch linux-kernel-bc250.patch' rpmbuild/SPECS/kernel.spec
+
+      - name: Build SRPM
+        run: |
+          rpmbuild -bs rpmbuild/SPECS/kernel.spec
+
+      - name: Upload patched rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-patch.src.rpm
+          path: ./rpmbuild/SRPMS/kernel-*.src.rpm
