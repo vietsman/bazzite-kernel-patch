@@ -31,7 +31,9 @@ jobs:
 
       - name: Apply Patch
         run: |
-          ls -la
+          ls -la ~
+          ls -la /root/
+          pwd
           cp ./linux-kernel-bc250.patch rpmbuild/SOURCES
           sed -i '/^Patch999999: linux-kernel-test.patch$/a Patch100: linux-kernel-bc250.patch' rpmbuild/SPECS/kernel.spec
           sed -i '/^ApplyOptionalPatch linux-kernel-test.patch$/a ApplyOptionalPatch linux-kernel-bc250.patch' rpmbuild/SPECS/kernel.spec
