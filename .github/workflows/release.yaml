@@ -15,6 +15,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Build Tools
+        run: |
+          dnf install -y rpm-build rpmdevtools fedpkg copr-cli
+
+      - name: Setup RPM build tree
+        run: rpmdev-setuptree
+
+      - name: Download Fedora Kernel SRPM
+        run: dnf download --source kernel
+
+      - name: Extract the SRPM
+        run: |
+          rpm -ivh kernel-*.rpm
+
       - name: Apply Patch
         run: |
           ls -la
