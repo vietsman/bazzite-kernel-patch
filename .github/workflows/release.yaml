@@ -15,59 +15,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install initial dependencies
+      - name: Install Build Tools
         run: |
-          dnf install -y dnf-plugins-core rpm-build rpmdevtools wget cpio xz \
-                         make gcc elfutils-libelf-devel patch git
+          dnf install -y rpm-build rpmdevtools fedpkg copr-cli
 
       - name: Setup RPM build tree
         run: rpmdev-setuptree
 
-      - name: Detect latest Fedora 42 kernel (x86_64)
-        id: detect
-        run: |
-          set -euo pipefail
-          NEVRA=$(dnf repoquery --latest-limit=1 --arch=x86_64 \
-            --qf '%{name}-%{version}-%{release}.%{arch}' kernel-core)
-          KVER="${NEVRA#kernel-core-}"
-          echo "kernel_version=${KVER}" >> $GITHUB_OUTPUT
-          echo "Detected kernel: ${KVER}"
+      - name: Download Fedora Kernel SRPM
+        run: dnf download --source kernel
 
-      - name: Install kernel headers
+      - name: Extract the SRPM
         run: |
-          dnf install -y "kernel-devel-${{ steps.detect.outputs.kernel_version }}" || dnf install -y kernel-devel
+          rpm -ivh kernel-*.rpm
 
-      - name: Download Fedora kernel SRPM
+      - name: Apply Patch
         run: |
-          dnf download --source "kernel-core-${{ steps.detect.outputs.kernel_version }}"
-          rpm -ivh kernel-core-*.src.rpm
+          cp ./linux-kernel-bc250.patch rpmbuild/SOURCES
+          sed -i '/^Patch999999: linux-kernel-test.patch$/a Patch100: linux-kernel-bc250.patch' rpmbuild/SPECS/kernel.spec
+          sed -i '/^ApplyOptionalPatch linux-kernel-test.patch$/a ApplyOptionalPatch linux-kernel-bc250.patch' rpmbuild/SPECS/kernel.spec
 
-      - name: Extract AMDGPU driver only
+      - name: Build SRPM
         run: |
-          SRC_DIR=$(ls -d ~/rpmbuild/SOURCES/linux-*/ | head -n1)
-          mkdir -p /tmp/amdgpu-src/pm/swsmu
-          cp -r $SRC_DIR/drivers/gpu/drm/amd/amdgpu /tmp/amdgpu-src/
-          cp -r $SRC_DIR/drivers/gpu/drm/amd/pm/swsmu/smu11 /tmp/amdgpu-src/pm/swsmu
+          rpmbuild -bs rpmbuild/SPECS/kernel.spec
 
-      - name: Apply cyan_skillfish patch
-        run: |
-          sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MIN[[:space:]]\+1000/#define CYAN_SKILLFISH_SCLK_MIN 350/' \
-            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
-          sed -i 's/#define[[:space:]]\+CYAN_SKILLFISH_SCLK_MAX[[:space:]]\+2000/#define CYAN_SKILLFISH_SCLK_MAX 2230/' \
-            /tmp/amdgpu-src/pm/swsmu/smu11/cyan_skillfish_ppt.c
-
-      - name: Build AMDGPU module
-        run: |
-          KVER="${{ steps.detect.outputs.kernel_version }}"
-          BUILD_DIR="/lib/modules/$KVER/build"
-          if [ ! -d "$BUILD_DIR" ]; then
-            echo "Kernel build directory not found. Using default kernel headers."
-            BUILD_DIR=$(rpm -ql kernel-devel | grep "/build$" | head -n1)
-          fi
-          make -C "$BUILD_DIR" M=/tmp/amdgpu-src modules
-
-      - name: Upload module artifact
+      - name: Upload patched rpm
         uses: actions/upload-artifact@v4
         with:
-          name: amdgpu-patched-${{ steps.detect.outputs.kernel_version }}
-          path: /tmp/amdgpu-src/**/*.ko
+          name: kernel-patch.src.rpm
+          path: ./rpmbuild/SRPMS/kernel-*.src.rpm
