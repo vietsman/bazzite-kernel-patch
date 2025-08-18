@@ -16,4 +16,4 @@ This patch simply aligns the frequency range with what the hardware natively sup
 
 ## ©️ Credits
 
-  - [ViRazY](https://discord.com/channels/1315924807128449065/1398316687165624412)
+  - [ViRazY](https://github.com/Vinjul1704)
