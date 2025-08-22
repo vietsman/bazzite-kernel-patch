@@ -1,6 +1,9 @@
 name: Patch Fedora Kernel Source
 
 on:
+on:
+  schedule:
+    - cron: "40 2 * * 0" # 8:40 utc monday
   workflow_dispatch:
 
 jobs:
@@ -51,3 +54,4 @@ jobs:
       - name: Upload to COPR
         run: |
           copr-cli build vietsman/patched-kernel-bc250 ~/rpmbuild/SRPMS/kernel-*.src.rpm
+
